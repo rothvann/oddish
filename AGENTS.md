@@ -371,6 +371,16 @@ otherwise it falls back to the highest version represented by such trials. The
 so progressive loading cannot change the files/counts pivot or mix one
 version's trials with another's artifacts.
 
+Sweep appends resolve their own version through `resolve_append_version_id`
+(`oddish/core/endpoints/sweep.py`). A submission whose `content_hash` is `None`
+uploaded no task directory, so it pins new trials -- and scopes its
+failed-trial reconciliation -- to the target experiment's effective version
+rather than `tasks.current_version_id`. This keeps a top-up on the version the
+experiment grid already displays instead of pivoting the whole row onto a
+default that an unrelated run advanced. Submissions that carry content, target
+no experiment, or name an experiment with no trials for the task keep the task
+default. `create_task` is unaffected: a fresh task always runs its own upload.
+
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and

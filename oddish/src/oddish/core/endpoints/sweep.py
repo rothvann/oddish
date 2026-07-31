@@ -229,6 +229,36 @@ async def _existing_task_environment(
     return EnvironmentType(existing_environment) if existing_environment else None
 
 
+async def resolve_append_version_id(
+    session: AsyncSession,
+    *,
+    task: TaskModel,
+    experiment_id: str | None,
+    uploaded_content_hash: str | None,
+) -> str | None:
+    """Task version an append should pin its new trials to.
+
+    A submission carrying no content hash uploaded no task directory, so it
+    targets the task as the experiment already runs it: stay on that
+    experiment's version rather than pulling the experiment onto a default that
+    some unrelated run advanced. The version comes from
+    ``fetch_experiment_effective_version_ids``, the same rule the experiment
+    grid pivots on, so an append lands where its results will be displayed.
+
+    Falls back to ``task.current_version_id`` when the submission uploaded
+    content, when there is no target experiment, or when that experiment has no
+    trials for this task yet.
+    """
+    if uploaded_content_hash is not None or experiment_id is None:
+        return task.current_version_id
+    from oddish.core.helpers import fetch_experiment_effective_version_ids
+
+    effective_versions = await fetch_experiment_effective_version_ids(
+        session, experiment_id=experiment_id, task_ids=[task.id]
+    )
+    return effective_versions.get(task.id, task.current_version_id)
+
+
 def _resolve_sweep_environments(
     submission_environment: EnvironmentType | None,
     inherited_environment: EnvironmentType | None,
@@ -527,12 +557,19 @@ async def create_task_sweep_core(
         target_experiment_id = new_experiment_id or (
             primary_experiment.id if primary_experiment else None
         )
+        append_version_id = await resolve_append_version_id(
+            session,
+            task=task,
+            experiment_id=target_experiment_id,
+            uploaded_content_hash=submission.content_hash,
+        )
+
         existing_counts: dict[tuple[str, str | None], int] | None = None
         failed_trial_ids: dict[tuple[str, str | None], list[str]] = defaultdict(list)
-        if task.current_version_id is not None:
+        if append_version_id is not None:
             reconcile_where = [
                 TrialModel.task_id == task.id,
-                TrialModel.task_version_id == task.current_version_id,
+                TrialModel.task_version_id == append_version_id,
                 TrialModel.is_probe.is_(False),
                 TrialModel.superseded_by_trial_id.is_(None),
             ]
@@ -598,6 +635,7 @@ async def create_task_sweep_core(
                 experiment_id=new_experiment_id,
                 billed_user_id=billed_user_id,
                 supersede_failed_trial_ids=supersede_by_spec,
+                task_version_id=append_version_id,
             )
         except TrialSupersedeConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
