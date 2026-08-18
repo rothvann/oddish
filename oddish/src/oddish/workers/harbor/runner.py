@@ -71,6 +71,7 @@ from .agent_config import (
 from .model_hosts import (
     GEMINI_BASE_URL_KEYS,
     GEMINI_OAUTH_ENV_KEYS,
+    GEMINI_CLI_INSTALL_HOSTS,
     OPENCODE_INSTALL_HOSTS,
     agent_runtime_hosts,
     outbound_hosts_for_model,
@@ -1171,6 +1172,22 @@ def _opencode_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
         *OPENCODE_INSTALL_HOSTS,
         *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
     ]
+def _gemini_cli_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
+    """Hosts the gemini CLI needs across install *and* run.
+
+    Same lifecycle as the opencode arm above: Harbor's ``GeminiCli.install``
+    bootstraps nvm, a Node runtime and the ``@google/gemini-cli`` npm package
+    during agent SETUP, which runs under the ENVIRONMENT baseline. An
+    agent-phase allowlist only takes effect around ``agent.run()``, so it can
+    never cover the install -- observed across the gemini-3.7 backfill, where
+    every trial on an allowlist task died with ``curl: (35) Recv failure:
+    Connection reset by peer`` at attempts=6, before consuming a token.
+    """
+    return [
+        *GEMINI_CLI_INSTALL_HOSTS,
+        *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
+    ]
+
 
 
 def _read_query_cli_text() -> str:
@@ -1735,6 +1752,23 @@ async def _run_harbor_trial_async_impl(
             )
         ):
             hosts = _opencode_environment_hosts(agent_config)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
+
+        # gemini-cli self-installs (nvm/Node/@google/gemini-cli) at agent-setup
+        # under the environment baseline -- identical lifecycle to the opencode
+        # arm above, identical fix. Without this, every gemini-cli trial on a
+        # task whose [environment] baseline is an allowlist fails during setup;
+        # on a public baseline the merge is a no-op (harbor ignores extras).
+        if (agent or "").strip().lower().startswith("gemini-cli") and not (
+            _supports_daytona_compose_restricted_agent_network(
+                task_path=effective_task_path,
+                environment_config=env_config,
+            )
+        ):
+            hosts = _gemini_cli_environment_hosts(agent_config)
             env_config.extra_allowed_hosts = [
                 *env_config.extra_allowed_hosts,
                 *[h for h in hosts if h not in env_config.extra_allowed_hosts],

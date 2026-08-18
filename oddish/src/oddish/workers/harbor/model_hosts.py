@@ -144,6 +144,14 @@ OPENCODE_INSTALL_HOSTS: tuple[str, ...] = (
     "nodejs.org",  # Node runtime downloaded by nvm
     "registry.npmjs.org",  # npm metadata + package tarballs
 )
+# gemini-cli has the same shape as opencode: Harbor's ``GeminiCli.install``
+# runs the shared ``nvm_node_install_snippet()`` and then
+# ``npm install -g @google/gemini-cli`` during agent SETUP, so it needs the same
+# bootstrap chain on the ENVIRONMENT baseline for exactly the same reason -- an
+# agent-phase entry applies only around ``agent.run()``, long after the install
+# has already failed. Aliased rather than duplicated so the two stay in sync.
+GEMINI_CLI_INSTALL_HOSTS: tuple[str, ...] = OPENCODE_INSTALL_HOSTS
+
 _AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {
     "tbh": _TBH_RUNTIME_HOSTS,
     "dsh": _DSH_INSTALL_HOSTS + _DSH_DEEPSEEK_RUNTIME_HOSTS,

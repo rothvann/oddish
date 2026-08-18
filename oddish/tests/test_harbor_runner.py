@@ -4528,6 +4528,40 @@ def test_opencode_environment_hosts_span_install_and_model():
     assert "openrouter.ai" in hosts  # ...and inference still works
 
 
+def test_gemini_cli_environment_hosts_span_install_and_model():
+    """Regression: the gemini-3.7 backfill lost 394 trials to a setup failure.
+
+    gemini-cli installs during agent SETUP, which runs under the environment
+    baseline, so an agent-phase allowlist can never cover it. Every trial on a
+    task whose ``[environment]`` baseline was an allowlist (the post-training
+    family is allowlisted to ``x.ai`` for grok-build) died with ``curl: (35)
+    Recv failure: Connection reset by peer`` reaching
+    ``raw.githubusercontent.com``, at attempts=6, before consuming a token.
+    """
+    hosts = harbor_runner._gemini_cli_environment_hosts(
+        HarborAgentConfig(name="gemini-cli", model_name="gemini/gemini-3.7-flash")
+    )
+
+    assert "raw.githubusercontent.com" in hosts  # nvm install.sh
+    assert "nodejs.org" in hosts  # Node runtime downloaded by nvm
+    assert "registry.npmjs.org" in hosts  # @google/gemini-cli package
+    assert "generativelanguage.googleapis.com" in hosts  # inference still works
+
+
+def test_gemini_cli_environment_hosts_follow_custom_base_url():
+    """A trial pinning a custom Gemini base URL allowlists that host too."""
+    hosts = harbor_runner._gemini_cli_environment_hosts(
+        HarborAgentConfig(
+            name="gemini-cli",
+            model_name="gemini/gemini-3.7-flash",
+            env={"GOOGLE_GEMINI_BASE_URL": "https://gemini-relay.example/v1"},
+        )
+    )
+
+    assert "gemini-relay.example" in hosts
+    assert "raw.githubusercontent.com" in hosts
+
+
 def test_opencode_environment_hosts_follow_custom_base_url():
     """A trial pinning ``OPENROUTER_BASE_URL`` allowlists that host instead."""
     hosts = harbor_runner._opencode_environment_hosts(
