@@ -735,7 +735,7 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return ["queued", "retrying", "running", "pending"].includes(trial.status);
 }
 
-type SandboxBackendId = "daytona" | "modal" | "ec2";
+type SandboxBackendId = "daytona" | "modal" | "archil" | "ec2";
 
 type SandboxBackend = {
   id: SandboxBackendId;
@@ -761,6 +761,10 @@ const SANDBOX_BACKENDS: Record<
     logoSrc: "/modal-logo-icon.png",
     logoWidth: 10,
   },
+  archil: {
+    id: "archil",
+    label: "Archil",
+  },
   ec2: {
     id: "ec2",
     label: "EC2",
@@ -774,6 +778,7 @@ function normalizeSandboxBackend(
   if (
     normalized === "daytona" ||
     normalized === "modal" ||
+    normalized === "archil" ||
     normalized === "ec2"
   ) {
     return normalized;

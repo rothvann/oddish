@@ -79,6 +79,7 @@ from oddish.worker.probe_staging import (
 from oddish.workers.analysis_trials import is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.outcome import merged_trial_result
+from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
     HarborOutcome,
     capture_live_sandbox_resources,
@@ -200,6 +201,7 @@ class PreparedTrialRun:
 class TrialExecutionResult:
     outcome: HarborOutcome | None
     execution_error: str | None
+    retryable: bool = True
     tailed_attempt: int | None = None
 
 
@@ -772,6 +774,7 @@ async def _store_trial_results(
     outcome: HarborOutcome | None,
     trial_s3_key: str | None,
     execution_error: str | None,
+    execution_retryable: bool = True,
     probe_analysis: dict | None = None,
     worker_id: str | None = None,
     worker_job_id: str | None = None,
@@ -945,7 +948,13 @@ async def _store_trial_results(
             trial.error_message = (
                 execution_error or "Trial execution failed with exception"
             )
-            if trial.attempts < trial.max_attempts:
+            if not execution_retryable:
+                trial.status = TrialStatus.FAILED
+                trial.finished_at = utcnow()
+                console.print(
+                    f"[red]Trial {trial_id} FAILED (non-retryable execution error)[/red]"
+                )
+            elif trial.attempts < trial.max_attempts:
                 trial.status = TrialStatus.RETRYING
                 trial.finished_at = None
                 console.print(
@@ -1093,17 +1102,19 @@ async def _handle_harbor_event(
         observed_at = observed_at.replace(tzinfo=timezone.utc)
 
     if _ENVIRONMENT_PROVISIONED is not None and event == _ENVIRONMENT_PROVISIONED:
-        if sandbox_launch is None:
-            raise RuntimeError(
-                f"Trial {trial_id} received environment-provisioned without a "
-                "sandbox ledger row"
+        provider = (hook_event.environment_provider or "").strip().lower()
+        if provider == "ec2":
+            if sandbox_launch is None:
+                raise RuntimeError(
+                    f"Trial {trial_id} received an EC2 environment-provisioned "
+                    "event without a sandbox ledger row"
+                )
+            await mark_environment_provisioned(
+                context=sandbox_launch,
+                provider=hook_event.environment_provider,
+                external_id=hook_event.environment_external_id,
+                worker_id=worker_id,
             )
-        await mark_environment_provisioned(
-            context=sandbox_launch,
-            provider=hook_event.environment_provider,
-            external_id=hook_event.environment_external_id,
-            worker_id=worker_id,
-        )
 
     if event in (TrialEvent.END, TrialEvent.CANCEL) and cost_state is not None:
         cost_state.terminal_at = observed_at
@@ -1367,6 +1378,7 @@ async def _execute_trial(
     sandbox_launch: SandboxLaunchContext | None = None,
 ) -> TrialExecutionResult:
     execution_error: str | None = None
+    retryable = True
     tailed_attempt: int | None = None
     try:
         try:
@@ -1404,25 +1416,16 @@ async def _execute_trial(
             worker_job_id=worker_job_id,
             harbor_config=prepared_trial.trial_harbor_config,
             org_id=prepared_trial.org_id,
+            billed_user_id=prepared_trial.billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
         )
     except asyncio.CancelledError:
-        # CancelledError inherits from BaseException, not Exception, so must be caught explicitly.
-        # This can happen if the worker is shutdown mid-trial.
-        import traceback
-
-        tb = traceback.format_exc()
-        execution_error = (
-            "Trial was cancelled by the worker runtime. This typically means the worker "
-            "was restarted, hit a timeout, or the job was explicitly cancelled. "
-            f"Check worker logs for details.\n\nTraceback:\n{tb}"
-        )
-        console.print(f"[yellow]Trial {trial_id} cancelled: {execution_error}[/yellow]")
-        outcome = None
-        # Don't re-raise - we want to properly update the trial status in the database
+        console.print(f"[yellow]Trial {trial_id} cancelled by worker runtime[/yellow]")
+        raise
     except Exception as e:
         execution_error = f"{type(e).__name__}: {e}"
+        retryable = not isinstance(e, QuotaPauseControlError)
         console.print(f"[red]Trial {trial_id} execution error: {execution_error}[/red]")
         outcome = None
     finally:
@@ -1439,6 +1442,7 @@ async def _execute_trial(
     return TrialExecutionResult(
         outcome=outcome,
         execution_error=execution_error,
+        retryable=retryable,
         tailed_attempt=tailed_attempt,
     )
 
@@ -1859,6 +1863,7 @@ async def run_trial_job(
                 outcome=execution.outcome,
                 trial_s3_key=trial_s3_key,
                 execution_error=execution.execution_error,
+                execution_retryable=execution.retryable,
                 probe_analysis=probe_analysis,
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,
